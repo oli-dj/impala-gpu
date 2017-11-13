@@ -1,24 +1,25 @@
 
-__global__ void multiplyArray(const int* a, const int* b, const int N, const int M, int* c){
+__global__ void multiplyArray(const int* matches, const int* counts, const int N, const int M, int* counts_out){
     /*
     Embarrassingly simple parallel multiply where output and first matrix are 1D
      
     Inputs:
-    a: N length array of matches (ideally ones and zeros)
-    b: N*M length array of counts (integers)
+    matches: N length array of matches (ideally ones and zeros)
+    counts: N*M length array of counts (integers)
     N: listLenght
     M: numFacies
 
 
     Input/Output:
-    c: Result of element-wise multiplication of 'a' with each "row" of 'b'.
+    counts_out: Result of element-wise multiplication of 'a' with each "row" of 'b'.
     */
     
-    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int x = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if(i < N){
-        for(int j = 0; j < M; j++){
-            c[M*i + j] = a[i] * b[M*i + j];
+    // For length of list do
+    if(x < N){
+        for(int y = 0; y < M; y++){
+            counts_out[N*y + x] = matches[x] * counts[N*y + x];
         }
     }
 } 
