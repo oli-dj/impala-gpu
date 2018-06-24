@@ -15,11 +15,10 @@ function [ SG, tauG, stats ] = impala_core(SG, SDG, list, path, tau,...
 %  cat:       categories
 %  options.threshold:   minimum count in list, else use marginal cpdf.
 %         .print:       boolean; 1 shows progress, 0 no print to screen
-%         .num_soft_nc  Number nof non-colocated soft data to consider
-%                       (default 0, increases processing time dramatically)
 %         .trim         boolean, to trim or not
 %         .trim_size    how much to trim
 %         .trim_trigger how many list misses required to trigger a trim
+%         .cap          max number of informed nodes.
 %
 % Outputs
 %  SG:        Simlation grid
@@ -31,8 +30,11 @@ function [ SG, tauG, stats ] = impala_core(SG, SDG, list, path, tau,...
 %%
 print = options.print;
 threshold = options.threshold;
+cap = options.cap;
+
 trimming = options.trimming;
 trim_size = options.trim_size;
+trim_trigger = options.trim_trigger;
 
 %%
 formatspec = 'Time elapsed: %1i seconds. %1i percent done ...\n';
@@ -89,11 +91,19 @@ switch dim
         trim = 0;
         for i = start:n_u
             d = NaN(1,template_length);
-            % Get data event
+            %% Get data event
+            num_informed = 0;
             for h = 1:(template_length-trim)
-                try
-                    d(h) = SG(path(i,1)+tau(h,1),path(i,2)+tau(h,2));
-                catch
+                if num_informed < cap
+                    try
+                        d(h) = SG(path(i,1)+tau(h,1),path(i,2)+tau(h,2));
+                        if ~isnan(d(h))
+                            num_informed = num_informed + 1;
+                        end
+                    catch
+                        d(h) = NaN;
+                    end
+                else
                     d(h) = NaN;
                 end
             end
@@ -128,10 +138,24 @@ switch dim
                 counts = sum(C(ind,:),1);
                 % total counts
                 counts_tot = sum(counts);
-                %if still below thershold
+                % If still below thresshold
+                % Draw fropom marginal distribution
                 if counts_tot < threshold
-                    % Draw fropom marginal distribution
-                    result = cat(find(marginal_prob_cum > rand_pre(i),1));
+                    % If there is colocated soft data:
+                    if ~isnan(sum(SDG(path(i,1),path(i,2))))
+                        SD(1) = SDG(path(i,1),path(i,2),1);
+                        SD(2) = SDG(path(i,1),path(i,2),2);
+                        counts = marginal_counts.*SD;
+                        % probabilities
+                        probs = counts./counts_tot;
+                        % commulative probabilities
+                        prob_cum = cumsum(probs);
+                        % draw a value and assign
+                        result = cat(find(prob_cum > rand_pre(i),1));
+                    else
+                        result = cat(...
+                            find(marginal_prob_cum > rand_pre(i),1));
+                    end
                     SG(path(i,1),path(i,2)) = result;
                     
                     % Set data event length to zero
@@ -140,11 +164,24 @@ switch dim
                 else
                     % if there is soft data
                     if ~isnan(sum(SDG(path(i,:))))
-                        %SD = SDG(path(i,:),:);
-                        SD = SDG(path(i,1),path(i,2),:);
+                        SD(1) = SDG(path(i,1),path(i,2),1);
+                        SD(2) = SDG(path(i,1),path(i,2),2);
                         counts = counts.*SD(:)';
                         counts_tot = sum(counts);
                     end
+                    
+                                    
+                    % If the co-locational soft data is incompatible with
+                    % the counts found, use it with the marginal distribution
+                    % instead.
+                    if (counts_tot < .1) || isnan(counts_tot)
+                        if ~isnan(sum(SDG(path(i,1),path(i,2))))
+                            counts = marginal_counts.*SD;
+                        else
+                            counts = marginal_counts;
+                        end
+                    end
+                    counts_tot = sum(counts);
                     
                     % probabilities
                     probs = counts./counts_tot;
@@ -163,13 +200,32 @@ switch dim
                 end
                 
             else
-                % Draw from marginal distribution
-                SG(path(i,1),path(i,2)) = cat(find(marginal_prob_cum >...
-                    rand_pre(i),1));
+                %% Draw from marginal distribution
                 
-                % Set data event length to zero
-                tauG(path(i,1),path(i,2)) = 0;
-                stats.informed_final(i) = 0;
+                %% Co-locational soft data
+                if ~isnan(sum(SDG(path(i,1),path(i,2),:)))
+                    SD(1) = SDG(path(i,1),path(i,2),1);
+                    SD(2) = SDG(path(i,1),path(i,2),2);
+                    
+                    % use co-locational soft data with marginal
+                    % distribution
+                    counts = marginal_counts.*SD;
+                    counts_tot = sum(counts);
+                    probs = counts./counts_tot;
+                    % commulative probabilities
+                    prob_cum = cumsum(probs);
+                    
+                    % draw a value and assign
+                    SG(path(i,1),path(i,2)) = ...
+                        cat(find(prob_cum > rand_pre(i),1));
+                else
+                    SG(path(i,1),path(i,2)) = ...
+                        cat(find(marginal_prob_cum > rand_pre(i),1));
+                    
+                    % Set data event length to zero
+                    tauG(path(i,1),path(i,2)) = 0;
+                    stats.informed_final(i) = 0;
+                end
             end
             if (print && ~mod(100.*i./n_u,5))
                 time_elapsed = toc;
@@ -180,7 +236,7 @@ switch dim
             stats.template_length(i) = template_length - trim;
             
             %% Trim function
-            if trimming && (discards > 100)
+            if (trimming > 0) && (discards > trim_trigger)
                 trim = trim + trim_size;
                 discards = 0;
             end
@@ -267,6 +323,12 @@ switch dim
             if (print && ~mod(100.*i./n_u,5))
                 time_elapsed = toc;
                 fprintf(formatspec,round(time_elapsed),round(100*(i/n_u)));
+            end
+            
+            %% Trim function
+            if (trimming > 0) && (discards > trim_trigger)
+                trim = trim + trim_size;
+                discards = 0;
             end
         end
         
