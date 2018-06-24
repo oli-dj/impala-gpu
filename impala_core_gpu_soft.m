@@ -20,6 +20,7 @@ function [ SG, tauG, stats] = impala_core_gpu_soft(SG, SDG, list, path,...
 %         .trim         boolean, to trim or not
 %         .trim_size    how much to trim
 %         .trim_trigger how many list misses required to trigger a trim
+%         .cap          max number of informed nodes.
 %
 % Outputs
 %  SG:                  Simlation grid
@@ -31,6 +32,7 @@ function [ SG, tauG, stats] = impala_core_gpu_soft(SG, SDG, list, path,...
 %% Get options
 print = options.print;
 threshold = options.threshold;
+cap = options.cap;
 
 % Trimming options
 trimming = options.trimming;
@@ -49,7 +51,7 @@ tau = tau(:,1:dim);     %only use dimensions of tau present in the SG
 template_length = size(tau,1); %size of data template
 
 % Init stats
-tauG = zeros(size(SG)); 
+tauG = zeros(size(SG));
 stats.informed_init = NaN(n_u,1);
 stats.informed_final = NaN(n_u,1);
 stats.time_elapsed = NaN(n_u,1);
@@ -126,10 +128,18 @@ switch dim % Switch for 2D and 3D. TODO: Implement 1D support too.
         for i = 1:n_u
             d = NaN(1,template_length);
             %% Get data event
+            num_informed = 0;
             for h = 1:(template_length-trim)
-                try
-                    d(h) = SG(path(i,1)+tau(h,1),path(i,2)+tau(h,2));
-                catch
+                if num_informed < cap
+                    try
+                        d(h) = SG(path(i,1)+tau(h,1),path(i,2)+tau(h,2));
+                        if ~isnan(d(h))
+                            num_informed = num_informed + 1;
+                        end
+                    catch
+                        d(h) = NaN;
+                    end
+                else
                     d(h) = NaN;
                 end
             end
@@ -144,18 +154,21 @@ switch dim % Switch for 2D and 3D. TODO: Implement 1D support too.
                 %Search within template
                 for h = 1:(template_length-trim)
                     % ...and only this many and only if node uninformed
-                    if (isnan(d(h)) && nsd < num_soft_nc)
+                    if (isnan(d(h))) && (nsd < num_soft_nc)
                         try
-                            % Record soft data
-                            sd_temp = SDG(path(i,1)+tau(h,1),...
+                            % Check if node has been simulated
+                            if isnan(sum(SG(path(i,1)+tau(h,1),...
+                                     path(i,2)+tau(h,2))))
+                                sd_temp = SDG(path(i,1)+tau(h,1),...
                                 path(i,2)+tau(h,2),:);
-                            if ~isnan(sd_temp)
-                                d_soft(nsd+1,:) = sd_temp;
-                                %record relative location
-                                h_soft(nsd+1,:) = h;
+                                if ~isnan(sd_temp)
+                                    d_soft(nsd+1,:) = sd_temp;
+                                    %record relative location
+                                    h_soft(nsd+1,:) = h;
                                 
-                                %increase counter
-                                nsd = nsd +1;
+                                    %increase counter
+                                    nsd = nsd +1;
+                                end
                             end
                         catch
                             % Don't increase counter (redundant)
@@ -353,7 +366,7 @@ switch dim % Switch for 2D and 3D. TODO: Implement 1D support too.
             stats.template_length(i) = template_length - trim;
             
             %% Trim function
-            if trimming && (discards > 100)
+            if trimming && (discards > trim_trigger)
                 trim = trim + trim_size;
                 discards = 0;
             end
@@ -576,11 +589,11 @@ switch dim % Switch for 2D and 3D. TODO: Implement 1D support too.
                 else
                     SG(path(i,1),path(i,2),path(i,3)) = ...
                         cat(find(marginal_prob_cum > rand_pre(i),1));
-                    
-                    % Set data event length to zero
-                    tauG(path(i,1),path(i,2),path(i,3)) = 0;
-                    stats.informed_final(i) = 0;
                 end
+                
+                % Set data event length to zero
+                tauG(path(i,1),path(i,2),path(i,3)) = 0;
+                stats.informed_final(i) = 0;
             end
             if (print && ~mod(100.*i./n_u,5))
                 time_elapsed = toc;
@@ -591,7 +604,7 @@ switch dim % Switch for 2D and 3D. TODO: Implement 1D support too.
             stats.template_length(i) = template_length - trim;
             
             %% Trim function
-            if trimming && (discards > trim_trigger)
+            if (trimming >0) && (discards > trim_trigger)
                 trim = trim + trim_size;
                 discards = 0;
             end
